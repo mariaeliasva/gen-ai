@@ -1,8 +1,14 @@
-from fastapi import FastAPI, HTTPException
+import io
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
+from PIL import Image
 import spacy
+import torch
 
 from app.bigram_model import BigramModel
+from app.cnn_model import CNN, TRANSFORM, CIFAR10_CLASSES
 
 app = FastAPI()
 
@@ -83,4 +89,39 @@ def get_similarity(request: SimilarityRequest):
         "word1": request.word1,
         "word2": request.word2,
         "similarity": float(t1.similarity(t2)),
+    }
+
+
+# ---------------------------------------------------------------
+# Assignment 2: CNN image classifier (CIFAR-10)
+# ---------------------------------------------------------------
+WEIGHTS_PATH = Path(__file__).parent / "cnn_weights.pth"
+
+cnn_model = CNN()
+cnn_model.load_state_dict(torch.load(WEIGHTS_PATH, map_location="cpu"))
+cnn_model.eval()  # inference mode
+
+
+@app.post("/classify")
+async def classify_image(file: UploadFile = File(...)):
+    """Upload an image and get its predicted CIFAR-10 class."""
+    contents = await file.read()
+    try:
+        image = Image.open(io.BytesIO(contents)).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=400, detail="The uploaded file is not a valid image")
+
+    x = TRANSFORM(image).unsqueeze(0)  # (1, 3, 64, 64)
+    with torch.no_grad():
+        probabilities = torch.softmax(cnn_model(x), dim=1)[0]
+
+    top_probs, top_indices = probabilities.topk(3)
+    return {
+        "filename": file.filename,
+        "predicted_class": CIFAR10_CLASSES[top_indices[0]],
+        "confidence": round(float(top_probs[0]), 4),
+        "top_3": [
+            {"class": CIFAR10_CLASSES[i], "probability": round(float(p), 4)}
+            for p, i in zip(top_probs, top_indices)
+        ],
     }

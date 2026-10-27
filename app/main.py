@@ -125,3 +125,42 @@ async def classify_image(file: UploadFile = File(...)):
             for p, i in zip(top_probs, top_indices)
         ],
     }
+
+
+# ---------------------------------------------------------------
+# Assignment 3: GAN that generates hand-written digits (MNIST)
+# ---------------------------------------------------------------
+from fastapi import Query
+from fastapi.responses import Response
+from torchvision.utils import make_grid
+
+from app.gan_model import Generator, LATENT_DIM
+
+GAN_WEIGHTS_PATH = Path(__file__).parent / "gan_generator.pth"
+
+gan_generator = Generator()
+gan_generator.load_state_dict(torch.load(GAN_WEIGHTS_PATH, map_location="cpu"))
+gan_generator.eval()  # inference mode
+
+
+@app.get("/generate-digits", responses={200: {"content": {"image/png": {}}}})
+def generate_digits(
+    num_images: int = Query(16, ge=1, le=64, description="How many digits to generate"),
+    seed: int | None = Query(None, description="Optional seed to get the same images again"),
+):
+    """Generate new hand-written digits with the GAN and return them as a PNG grid."""
+    if seed is not None:
+        torch.manual_seed(seed)
+
+    noise = torch.randn(num_images, LATENT_DIM)
+    with torch.no_grad():
+        images = gan_generator(noise)  # (num_images, 1, 28, 28), values in [-1, 1]
+
+    images = (images + 1) / 2  # rescale to [0, 1]
+    grid = make_grid(images, nrow=min(num_images, 8), padding=2)
+    array = (grid.permute(1, 2, 0).numpy() * 255).astype("uint8")
+    png = Image.fromarray(array.squeeze(-1) if array.shape[-1] == 1 else array)
+
+    buffer = io.BytesIO()
+    png.save(buffer, format="PNG")
+    return Response(content=buffer.getvalue(), media_type="image/png")

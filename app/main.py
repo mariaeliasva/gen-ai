@@ -145,7 +145,7 @@ gan_generator.eval()  # inference mode
 
 @app.get("/generate-digits", responses={200: {"content": {"image/png": {}}}})
 def generate_digits(
-    num_images: int = Query(16, ge=1, le=64, description="How many digits to generate"),
+    num_images: int = Query(16, ge=1, le=64, description="How many CIFAR-10-style images to generate"),
     seed: int | None = Query(None, description="Optional seed to get the same images again"),
 ):
     """Generate new hand-written digits with the GAN and return them as a PNG grid."""
@@ -164,3 +164,66 @@ def generate_digits(
     buffer = io.BytesIO()
     png.save(buffer, format="PNG")
     return Response(content=buffer.getvalue(), media_type="image/png")
+
+
+# ---------------------------------------------------------------
+# Assignment 4: Diffusion and Energy-Based image generators (CIFAR-10)
+# ---------------------------------------------------------------
+from app.diffusion_model import UNet, DiffusionModel
+from app.ebm_model import EnergyModel, generate_samples, IMAGE_SIZE as EBM_IMAGE_SIZE, NUM_CHANNELS as EBM_CHANNELS
+
+
+def images_to_png(images: torch.Tensor) -> Response:
+    """Turn a batch of images with values in [0, 1] into a PNG grid response."""
+    grid = make_grid(images.cpu(), nrow=min(images.size(0), 8), padding=2)
+    array = (grid.permute(1, 2, 0).numpy() * 255).astype("uint8")
+    png = Image.fromarray(array.squeeze(-1) if array.shape[-1] == 1 else array)
+    buffer = io.BytesIO()
+    png.save(buffer, format="PNG")
+    return Response(content=buffer.getvalue(), media_type="image/png")
+
+
+# Diffusion model: load the EMA network and normalization stats
+diffusion_checkpoint = torch.load(Path(__file__).parent / "diffusion_weights.pth", map_location="cpu")
+diffusion_model = DiffusionModel(UNet())
+diffusion_model.ema_network.load_state_dict(diffusion_checkpoint["ema_model_state_dict"])
+diffusion_model.normalizer_mean = diffusion_checkpoint["normalizer_mean"]
+diffusion_model.normalizer_std = diffusion_checkpoint["normalizer_std"]
+diffusion_model.eval()
+
+# Energy-based model
+ebm_model = EnergyModel()
+ebm_model.load_state_dict(torch.load(Path(__file__).parent / "ebm_weights.pth", map_location="cpu"))
+ebm_model.eval()
+
+
+@app.get("/generate-diffusion", responses={200: {"content": {"image/png": {}}}})
+def generate_diffusion(
+    num_images: int = Query(16, ge=1, le=64, description="How many CIFAR-10-style images to generate"),
+    diffusion_steps: int = Query(20, ge=1, le=200, description="Number of reverse diffusion (denoising) steps"),
+    seed: int | None = Query(None, description="Optional seed to get the same images again"),
+):
+    """Generate CIFAR-10-style images by starting from pure noise and removing it step by step."""
+    if seed is not None:
+        torch.manual_seed(seed)
+    images = diffusion_model.generate(num_images=num_images, diffusion_steps=diffusion_steps)
+    return images_to_png(images)
+
+
+@app.get("/generate-ebm", responses={200: {"content": {"image/png": {}}}})
+def generate_ebm(
+    num_images: int = Query(16, ge=1, le=64, description="How many CIFAR-10-style images to generate"),
+    steps: int = Query(256, ge=1, le=1000, description="Number of Langevin dynamics steps"),
+    step_size: float = Query(10.0, gt=0, description="Gradient descent step size on the image"),
+    seed: int | None = Query(None, description="Optional seed to get the same images again"),
+):
+    """Generate CIFAR-10-style images by doing gradient descent on random images to lower their energy.
+
+    Note: this endpoint must NOT run under torch.no_grad(), because sampling needs the
+    gradient of the energy with respect to the input images.
+    """
+    if seed is not None:
+        torch.manual_seed(seed)
+    start = torch.rand((num_images, EBM_CHANNELS, EBM_IMAGE_SIZE, EBM_IMAGE_SIZE)) * 2 - 1  # uniform noise in [-1, 1]
+    images = generate_samples(ebm_model, start, steps=steps, step_size=step_size, noise_std=0.005)
+    return images_to_png((images + 1) / 2)  # rescale from [-1, 1] to [0, 1]

@@ -103,3 +103,37 @@ curl -X POST http://127.0.0.1:8000/embedding \
 curl -X POST http://127.0.0.1:8000/classify \
   -F "file=@airplane.jpg"
 ```
+
+## Assignment 4: Diffusion and Energy-Based Models (CIFAR-10)
+
+Two new image generators trained on **CIFAR-10** (32×32 RGB) and served by the API.
+
+### New files
+
+| File | Description |
+|---|---|
+| `app/diffusion_model.py` | Offset cosine schedule, sinusoidal embedding, U-Net, `DiffusionModel` with EMA weights and reverse diffusion |
+| `app/ebm_model.py` | `EnergyModel` CNN and `generate_samples` (Langevin dynamics: gradient descent on the **input image**) |
+| `train_diffusion.py` | Trains the diffusion model (20 epochs) → `app/diffusion_weights.pth`, samples in `diffusion_samples/` |
+| `train_ebm.py` | Trains the EBM with contrastive divergence and a replay buffer (20 epochs) → `app/ebm_weights.pth`, samples in `ebm_samples/` |
+| `assignment4_part3.py` | Code for Part 3 (Questions 6–9: PyTorch gradient mechanics) |
+| `ASSIGNMENT4_ANSWERS.md` | Answers to Parts 2 and 3 |
+
+### New endpoints
+
+| Method | Endpoint | Parameters | Returns |
+|---|---|---|---|
+| GET | `/generate-diffusion` | `num_images` (1–64), `diffusion_steps` (1–200), `seed` | PNG grid of generated images |
+| GET | `/generate-ebm` | `num_images` (1–64), `steps` (1–1000), `step_size`, `seed` | PNG grid of generated images |
+
+### Train the models
+
+```bash
+uv run python train_diffusion.py
+uv run python train_ebm.py
+```
+
+### Results
+
+- **Diffusion:** the training loss went from 0.31 to 0.16. Samples show recognizable CIFAR-10 scenes (animals on grass, ships on water, cars, planes).
+- **EBM:** samples are smooth color textures with CIFAR-like palettes, but no clear objects. EBMs are harder to train and sample from than diffusion models, which is one reason diffusion dominates modern image generation.
